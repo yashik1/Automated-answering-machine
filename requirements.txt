@@ -1,42 +1,25 @@
 # Requirements for Mr. Singh Pizza Automated Answering Machine
 #
-# The application currently runs on the Python standard library alone, so
-# there are no runtime dependencies to install for the terminal demo. The
-# packages below are only needed for development/testing today; the heavier
-# telephony, speech, and web dependencies are listed (commented out) under
-# "Planned features" and should be enabled as those features are built.
+# The phone system uses Twilio's built-in speech recognition (<Gather
+# input="speech">) and text-to-speech (<Say>), so no local audio libraries
+# (pyaudio, SpeechRecognition, gtts, pyttsx3) are required — that removes the
+# usual PortAudio/pyaudio install headaches entirely.
 
-# --- Development & testing (needed to run the test suite) ---
+# --- Runtime: web server + telephony ---
+flask==3.1.3
+twilio==9.10.9
+python-dotenv==1.2.2
+gunicorn==26.0.0
+
+# --- Development & testing ---
 pytest==7.4.2
 black==23.9.1
 flake8==6.1.0
 
-# --- Planned features: web interface (Flask) ---
-# Enable when the Flask app that serves templates/index.html is added.
-# flask==2.3.3
-# python-dotenv==1.0.0
-# gunicorn==21.2.0
-
-# --- Planned features: telephony (Twilio) ---
-# Enable when real phone-call handling is added.
-# twilio==8.9.0
-
-# --- Planned features: speech (STT/TTS) ---
-# NOTE: pyaudio requires the system PortAudio library and often fails to
-# install without it. Install PortAudio first (e.g. `apt-get install
-# portaudio19-dev` or `brew install portaudio`) before enabling pyaudio.
-# SpeechRecognition==3.10.0
-# pyttsx3==2.90
-# gtts==2.5.0
-# pydub==0.25.1
-# pyaudio==0.2.13
-
-# --- Planned features: analytics/NLP (uncomment if needed) ---
+# --- Optional: analytics / advanced NLP (uncomment if you build these) ---
 # pandas==2.1.1
 # numpy==1.25.2
 # schedule==1.2.0
 # apscheduler==3.10.4
 # requests==2.31.0
 # spacy==3.7.2
-# transformers==4.35.0
-# torch==2.1.0
