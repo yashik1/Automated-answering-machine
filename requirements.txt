@@ -1,0 +1,39 @@
+# Requirements for Mr. Singh Pizza Automated Answering Machine
+# Core Python packages
+flask==2.3.3
+python-dotenv==1.0.0
+
+# Telephony (Twilio for phone integration)
+twilio==8.9.0
+
+# Speech recognition and synthesis
+SpeechRecognition==3.10.0
+pyttsx3==2.90
+gtts==2.5.0
+
+# Audio processing
+pydub==0.25.1
+pyaudio==0.2.13
+
+# Data handling
+pandas==2.1.1
+numpy==1.25.2
+
+# Utilities
+requests==2.31.0
+schedule==1.2.0
+apscheduler==3.10.4
+
+# Development and testing
+pytest==7.4.2
+black==23.9.1
+flake8==6.1.0
+
+# Optional: For advanced NLP (uncomment if needed)
+# spacy==3.7.2
+# transformers==4.35.0
+# torch==2.1.0
+
+# Optional: For production deployment
+# gunicorn==21.2.0
+# uvicorn[standard]==0.24.0
