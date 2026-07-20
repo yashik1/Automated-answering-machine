@@ -41,6 +41,28 @@ Mr. Singh Pizza Automated Answering Machine
 └── README.md                # This file
 ```
 
+## Quick Start
+
+The fastest way to run it — these scripts create the virtual environment,
+install dependencies, and start the server for you:
+
+```bash
+# Linux / macOS
+./run.sh          # start the web + phone server (http://localhost:5000)
+./run.sh test     # run the test suite
+./run.sh demo     # interactive terminal demo (no server)
+```
+
+```bat
+REM Windows (cmd)
+run.bat           REM start the server
+run.bat test      REM run the test suite
+run.bat demo      REM terminal demo
+```
+
+Then open `http://localhost:5000/` (website) and `http://localhost:5000/staff`
+(kitchen dashboard). Prefer to do it by hand? Follow the steps below.
+
 ## Installation
 
 1. **Clone the repository**
