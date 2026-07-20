@@ -84,6 +84,15 @@ def test_process_order_items_unrecognized(bot):
     assert result["action"] == "clarify"
 
 
+def test_process_order_items_picks_specific_item(bot):
+    """Regression: 'chicken tikka pizza' must match Chicken Tikka Pizza, not
+    Margherita just because both names contain the word 'pizza'."""
+    customer = bot.get_customer_by_phone("555-0101")
+    result = bot.process_order_items(customer, "2 chicken tikka pizza")
+    assert result["items"][0]["name"] == "Chicken Tikka Pizza"
+    assert result["items"][0]["quantity"] == 2
+
+
 # --- Orders & customers ---------------------------------------------------
 
 def test_create_order_computes_total(bot):

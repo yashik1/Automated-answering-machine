@@ -9,7 +9,11 @@ There are three layers:
 2. **The conversation state machine** (`src/conversation.py`) — turns spoken
    words into replies and drives the order flow.
 3. **The web/phone server** (`src/app.py`) — a Flask app exposing Twilio
-   voice webhooks plus a small website and JSON API.
+   voice webhooks, the kitchen dashboard, a small website, and a JSON API.
+
+Phone orders flow straight to a live **kitchen dashboard** at `/staff`, where
+staff advance each order through received → preparing → ready → out for
+delivery → completed.
 
 Twilio provides the phone number, converts the caller's speech to text, and
 speaks our replies. Our server only has to answer HTTP webhooks with TwiML.
@@ -134,15 +138,37 @@ Twilio requires a public HTTPS URL. Options, easiest first:
 
 Point the Twilio number's Voice webhook at `https://<public-host>/voice`.
 
-### 3d. Security checklist
+### 3d. The kitchen dashboard
+
+Staff open `https://<public-host>/staff` on any tablet or screen in the
+kitchen. It polls for orders every few seconds, shows items / customer /
+total / special instructions, and has buttons to advance each order's
+status. New orders flash and (once the "Sound" button is switched on) chime.
+
+Protect it with HTTP Basic auth by setting these in the environment / `.env`:
+
+```
+STAFF_USERNAME=kitchen
+STAFF_PASSWORD=choose-a-strong-password
+```
+
+If `STAFF_PASSWORD` is unset the dashboard is open (fine for local testing,
+not for production). The dashboard uses these API endpoints, which are
+guarded by the same auth:
+
+- `GET /api/orders` — active orders (`?include_completed=1` for the full list)
+- `POST /api/orders/<id>/status` — set an order's status
+
+### 3e. Security checklist
 
 - **Set `TWILIO_AUTH_TOKEN`** in the environment so the server rejects any
   request not signed by Twilio (returns 403). Without it, anyone who finds
   the URL can drive the bot.
+- **Set `STAFF_PASSWORD`** so the kitchen dashboard isn't publicly open.
 - Serve only over HTTPS.
 - Never commit `.env` (already covered by `.gitignore`).
 
-### 3e. Data & backups
+### 3f. Data & backups
 
 - Real customer and order data lives in `data/pizza_bot.db`. Back it up on a
   schedule (e.g. a nightly `cp`/`sqlite3 .backup` to off-machine storage).
@@ -157,8 +183,6 @@ Point the Twilio number's Voice webhook at `https://<public-host>/voice`.
   Integrate a payment step or take payment on pickup/delivery.
 - **Reservations and complaints** are acknowledged and flagged for a
   callback, not fully automated.
-- **Order routing** — orders sit in the database; connect them to the
-  kitchen's ticket system or a staff dashboard.
 - The order parser is keyword-based. It handles common phrasings ("two
   margherita pizzas", "a garlic bread") but a production system may want a
   proper NLU service for messy speech.

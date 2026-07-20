@@ -36,6 +36,21 @@ RESTAURANT_ADDRESS = os.getenv(
     "RESTAURANT_ADDRESS", "123 Pizza Street, Food City, FC 12345"
 )
 
+# Kitchen order lifecycle. The dashboard advances an order along these.
+ORDER_STATUSES = [
+    "received", "preparing", "ready", "out_for_delivery", "completed", "cancelled",
+]
+
+
+def _parse_dt(value):
+    """Parse a SQLite timestamp string (space- or T-separated) to a datetime."""
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
 
 def create_app(bot: PizzaBot = None) -> Flask:
     app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
@@ -59,6 +74,63 @@ def create_app(bot: PizzaBot = None) -> Flask:
         # Honour proxy headers so the URL matches what Twilio signed.
         url = request.url
         return validator.validate(url, request.form, signature)
+
+    # -- Staff dashboard auth ---------------------------------------------
+
+    def staff_authorized() -> bool:
+        """Optional HTTP Basic auth for the kitchen dashboard.
+
+        If STAFF_PASSWORD is unset (local dev/tests) the dashboard is open.
+        If it is set, the browser must supply matching Basic-auth creds; the
+        browser then resends them automatically to the /api/orders calls.
+        """
+        password = os.getenv("STAFF_PASSWORD")
+        if not password or app.config.get("TESTING_STAFF_OPEN", False):
+            return True
+        username = os.getenv("STAFF_USERNAME", "staff")
+        auth = request.authorization
+        return bool(auth and auth.username == username and auth.password == password)
+
+    def require_staff():
+        """Return a 401 challenge response if the staff request isn't authed,
+        otherwise None."""
+        if staff_authorized():
+            return None
+        resp = Response("Authentication required", 401)
+        resp.headers["WWW-Authenticate"] = 'Basic realm="Kitchen dashboard"'
+        return resp
+
+    def serialize_order(order: dict) -> dict:
+        """Enrich a raw order row for the dashboard: resolve item names and
+        add human-friendly times and an elapsed-minutes figure."""
+        items = []
+        for it in order["items"]:
+            name = it.get("name")
+            if not name:
+                menu_item = bot.get_menu_item(it.get("id"))
+                name = menu_item.name if menu_item else f"Item {it.get('id')}"
+            items.append({"name": name, "quantity": it.get("quantity", 1)})
+
+        placed = _parse_dt(order.get("order_time"))
+        ready = _parse_dt(order.get("estimated_ready"))
+        now = datetime.datetime.now()
+        minutes_ago = int((now - placed).total_seconds() // 60) if placed else None
+        overdue = bool(ready and now > ready and order["status"] not in
+                       ("completed", "cancelled"))
+
+        return {
+            "id": order["id"],
+            "customer_name": order["customer_name"],
+            "customer_phone": order["customer_phone"],
+            "items": items,
+            "total": order["total"],
+            "status": order["status"],
+            "special_instructions": order["special_instructions"],
+            "placed_at": placed.strftime("%I:%M %p") if placed else "",
+            "ready_by": ready.strftime("%I:%M %p") if ready else "",
+            "minutes_ago": minutes_ago,
+            "overdue": overdue,
+        }
 
     def voice_reply(result) -> Response:
         """Convert a TurnResult into a TwiML response."""
@@ -121,6 +193,41 @@ def create_app(bot: PizzaBot = None) -> Flask:
             estimated_ready=order.estimated_ready.isoformat() if order.estimated_ready else None,
             items=order.items,
         )
+
+    # -- Kitchen staff dashboard ------------------------------------------
+
+    @app.get("/staff")
+    def staff_dashboard():
+        challenge = require_staff()
+        if challenge:
+            return challenge
+        return render_template("staff.html", statuses=ORDER_STATUSES)
+
+    @app.get("/api/orders")
+    def api_orders():
+        challenge = require_staff()
+        if challenge:
+            return challenge
+        include_completed = request.args.get("include_completed", "0") == "1"
+        raw = bot.list_orders(include_completed=include_completed)
+        return jsonify(
+            orders=[serialize_order(o) for o in raw],
+            server_time=datetime.datetime.now().strftime("%I:%M:%S %p"),
+        )
+
+    @app.post("/api/orders/<int:order_id>/status")
+    def api_update_status(order_id: int):
+        challenge = require_staff()
+        if challenge:
+            return challenge
+        data = request.get_json(silent=True) or request.form
+        status = (data.get("status") or "").strip()
+        if status not in ORDER_STATUSES:
+            return jsonify(error=f"invalid status '{status}'"), 400
+        if not bot.order_exists(order_id):
+            return jsonify(error="order not found"), 404
+        bot.update_order_status(order_id, status)
+        return jsonify(id=order_id, status=status)
 
     # -- Twilio voice webhooks --------------------------------------------
 

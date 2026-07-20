@@ -416,6 +416,54 @@ class PizzaBot:
         conn.close()
         logger.info(f"Order #{order_id} status updated to: {status}")
 
+    def order_exists(self, order_id: int) -> bool:
+        """Return True if an order with this id exists."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM orders WHERE id = ?", (order_id,))
+        found = cursor.fetchone() is not None
+        conn.close()
+        return found
+
+    def list_orders(self, include_completed: bool = False,
+                    limit: int = 200) -> List[Dict]:
+        """List orders for the kitchen dashboard, oldest first, joined with
+        the customer name/phone. Completed and cancelled orders are excluded
+        unless ``include_completed`` is True."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT o.id, o.customer_id, o.items, o.total, o.status,
+                   o.order_time, o.estimated_ready, o.special_instructions,
+                   c.name AS customer_name, c.phone AS customer_phone
+            FROM orders o
+            LEFT JOIN customers c ON o.customer_id = c.id
+        '''
+        if not include_completed:
+            query += " WHERE o.status NOT IN ('completed', 'cancelled')"
+        query += " ORDER BY o.order_time ASC, o.id ASC LIMIT ?"
+
+        rows = cursor.execute(query, (limit,)).fetchall()
+        conn.close()
+
+        orders = []
+        for row in rows:
+            orders.append({
+                "id": row["id"],
+                "customer_id": row["customer_id"],
+                "customer_name": row["customer_name"] or "Guest",
+                "customer_phone": row["customer_phone"] or "",
+                "items": json.loads(row["items"]) if row["items"] else [],
+                "total": row["total"],
+                "status": row["status"],
+                "order_time": row["order_time"],
+                "estimated_ready": row["estimated_ready"],
+                "special_instructions": row["special_instructions"],
+            })
+        return orders
+
     def log_call(self, caller_id: str, call_type: CallType, status: CallStatus,
                  notes: str = None, sentiment_score: float = None):
         """Log call details"""
@@ -488,13 +536,20 @@ class PizzaBot:
 
                 item_name = " ".join(item_name_parts).strip()
 
-                # Find matching menu item
+                # Find the best-matching menu item by counting how many words
+                # of its name the caller actually said. Picking the highest
+                # overlap (rather than the first item containing any word)
+                # stops a generic word like "pizza" from matching the first
+                # pizza on the menu instead of the specific one requested.
+                requested_words = set(item_name.split())
                 matched_item = None
+                best_score = 0
                 for menu_item in self.menu_items.values():
-                    if (item_name in menu_item.name.lower() or
-                        any(word in menu_item.name.lower() for word in item_name.split())):
+                    name_words = set(menu_item.name.lower().split())
+                    score = len(name_words & requested_words)
+                    if score > best_score:
+                        best_score = score
                         matched_item = menu_item
-                        break
 
                 if matched_item:
                     items.append({

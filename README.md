@@ -23,13 +23,15 @@ Mr. Singh Pizza Automated Answering Machine
 ├── src/
 │   ├── main.py              # PizzaBot core: menu, orders, customers, SQLite; CLI demo
 │   ├── conversation.py      # Phone conversation state machine (order flow)
-│   └── app.py               # Flask app: Twilio voice webhooks + website + JSON API
+│   └── app.py               # Flask app: Twilio voice webhooks + dashboard + API
 ├── config.py                # Configuration constants
 ├── templates/
-│   └── index.html           # Informational website
+│   ├── index.html           # Informational website
+│   └── staff.html           # Live kitchen dashboard (/staff)
 ├── tests/
 │   ├── test_pizza_bot.py    # Unit tests for the bot core
-│   └── test_voice.py        # End-to-end tests of the Twilio voice flow
+│   ├── test_voice.py        # End-to-end tests of the Twilio voice flow
+│   └── test_staff.py        # Tests for the kitchen dashboard + API
 ├── data/                    # SQLite database (created at runtime, gitignored)
 ├── logs/                    # Application logs (created at runtime, gitignored)
 ├── requirements.txt         # Python dependencies
@@ -130,6 +132,19 @@ Webhook endpoints:
   conversation.
 
 Full step-by-step instructions are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+### Kitchen Dashboard
+Orders placed by phone flow straight to a live kitchen dashboard at
+`http://<host>/staff`. Staff see each order's items, customer, total, and
+special instructions, and advance it through the workflow
+(received → preparing → ready → out for delivery → completed). The board
+auto-refreshes every few seconds and can chime when a new order arrives.
+
+Protect it in production by setting `STAFF_PASSWORD` (and optionally
+`STAFF_USERNAME`) in the environment — the dashboard then requires HTTP
+Basic auth. It backs onto a small JSON API:
+- `GET /api/orders` — active orders (add `?include_completed=1` for all).
+- `POST /api/orders/<id>/status` — update an order's status.
 
 ### Development Mode
 For testing without a phone system:
