@@ -67,15 +67,13 @@ Mr. Singh Pizza Automated Answering Machine
    # Edit .env with your actual configuration values
    ```
 
-5. **Initialize the database**
-   ```bash
-   python src/main.py init-db
-   ```
-
-6. **Run the application**
+5. **Run the application**
    ```bash
    python src/main.py
    ```
+   The SQLite database, `logs/`, and `data/` directories are created
+   automatically on first run, seeded with the default menu and sample
+   customers — no separate initialization step is needed.
 
 ## Configuration
 
@@ -154,9 +152,17 @@ To add support for additional languages:
 
 ## Testing
 
-Run the test suite:
+Run the pytest suite (unit tests for intent detection, order parsing,
+totals, loyalty points, and order-status lookup):
 ```bash
-python -m pytest tests/
+pip install -r requirements.txt   # installs pytest
+pytest
+```
+
+Or run the standalone smoke test, which checks that the app imports,
+initializes its database, and loads the menu:
+```bash
+python test_installation.py
 ```
 
 ## Deployment

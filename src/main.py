@@ -14,12 +14,22 @@ import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 
+# Anchor all runtime paths to the project root so the app behaves the same
+# no matter which directory it is launched from.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# The log directory must exist before the FileHandler is created, otherwise
+# logging.basicConfig raises FileNotFoundError on a fresh clone.
+os.makedirs(LOG_DIR, exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/pizza_bot.log'),
+        logging.FileHandler(os.path.join(LOG_DIR, 'pizza_bot.log')),
         logging.StreamHandler()
     ]
 )
@@ -79,17 +89,19 @@ class Order:
 class PizzaBot:
     """Main class for Mr. Singh Pizza automated answering machine"""
 
-    def __init__(self, db_path: str = "data/pizza_bot.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = os.path.join(DATA_DIR, "pizza_bot.db")
         self.db_path = db_path
         self.menu_items: Dict[int, MenuItem] = {}
         self.customers: Dict[int, Customer] = {}
         self.active_calls: Dict[str, Dict] = {}
 
-        # Initialize directories
-        os.makedirs("logs", exist_ok=True)
-        os.makedirs("data", exist_ok=True)
-        os.makedirs("templates", exist_ok=True)
-        os.makedirs("static/audio", exist_ok=True)
+        # Ensure runtime directories exist, including the parent of whatever
+        # database path was supplied (which may be a relative test path).
+        os.makedirs(LOG_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+        os.makedirs(os.path.join(BASE_DIR, "static", "audio"), exist_ok=True)
 
         # Initialize database
         self.init_database()
@@ -263,6 +275,26 @@ class PizzaBot:
             )
         return None
 
+    def get_customer_by_id(self, customer_id: int) -> Optional[Customer]:
+        """Retrieve customer by ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM customers WHERE id = ?", (customer_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return Customer(
+                id=row[0],
+                name=row[1],
+                phone=row[2],
+                address=row[3],
+                preferences=json.loads(row[4]) if row[4] else None,
+                loyalty_points=row[5]
+            )
+        return None
+
     def get_menu_by_category(self, category: str) -> List[MenuItem]:
         """Get menu items by category"""
         return [item for item in self.menu_items.values()
@@ -356,15 +388,18 @@ class PizzaBot:
         conn.close()
 
         if row:
+            # orders columns: id, customer_id, items, total, status,
+            # order_time, estimated_ready, special_instructions (then c.name,
+            # c.phone from the join).
             return Order(
                 id=row[0],
                 customer_id=row[1],
-                items=json.loads(row[3]),
-                total=row[4],
-                status=row[5],
-                order_time=datetime.fromisoformat(row[6]) if row[6] else datetime.now(),
-                estimated_ready=datetime.fromisoformat(row[7]) if row[7] else None,
-                special_instructions=row[8]
+                items=json.loads(row[2]),
+                total=row[3],
+                status=row[4],
+                order_time=datetime.fromisoformat(row[5]) if row[5] else datetime.now(),
+                estimated_ready=datetime.fromisoformat(row[6]) if row[6] else None,
+                special_instructions=row[7]
             )
         return None
 
@@ -434,10 +469,10 @@ class PizzaBot:
         """Process the customer's order text into items"""
         # Simple NLP for order processing - in production would use more sophisticated NLP
         items = []
-        order_text_lower = order_text.lower()
 
-        # Simple parsing - look for numbers and item names
-        words = order_text.split()
+        # Simple parsing - look for numbers and item names. Lower-case the
+        # words up front so item matching is case-insensitive.
+        words = order_text.lower().split()
         i = 0
         while i < len(words):
             # Look for quantities
@@ -624,6 +659,11 @@ class PizzaBot:
 
         text_lower = speech_text.lower()
 
+        # Complaints first: a caller saying "my pizza was cold" should be
+        # routed to a complaint, not mistaken for a new order.
+        if any(word in text_lower for word in ['complaint', 'problem', 'issue', 'wrong', 'cold', 'late']):
+            return CallType.COMPLAINT
+
         # Order-related keywords
         if any(word in text_lower for word in ['order', 'pizza', 'food', 'hungry', 'delivery', 'pickup']):
             if any(word in text_lower for word in ['status', 'where is', 'when will', 'tracking']):
@@ -642,10 +682,6 @@ class PizzaBot:
         elif any(word in text_lower for word in ['reserve', 'reservation', 'table', 'book', 'seating']):
             return CallType.RESERVATION
 
-        # Complaints
-        elif any(word in text_lower for word in ['complaint', 'problem', 'issue', 'wrong', 'cold', 'late']):
-            return CallType.COMPLAINT
-
         return CallType.OTHER
 
     def handle_order_status(self, caller_id: str, speech_text: str) -> Dict:
@@ -660,7 +696,7 @@ class PizzaBot:
             order = self.get_order_status(order_id)
 
             if order:
-                customer = self.get_customer_by_phone(order.customer_id) if hasattr(self, 'get_customer_by_phone') else None
+                customer = self.get_customer_by_id(order.customer_id)
                 customer_name = customer.name if customer else "Valued Customer"
 
                 message = f"Hello {customer_name}! Let me check your order #{order_id}.\n\n"
