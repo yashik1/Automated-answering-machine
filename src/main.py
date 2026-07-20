@@ -14,12 +14,22 @@ import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 
+# Anchor all runtime paths to the project root so the app behaves the same
+# no matter which directory it is launched from.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# The log directory must exist before the FileHandler is created, otherwise
+# logging.basicConfig raises FileNotFoundError on a fresh clone.
+os.makedirs(LOG_DIR, exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/pizza_bot.log'),
+        logging.FileHandler(os.path.join(LOG_DIR, 'pizza_bot.log')),
         logging.StreamHandler()
     ]
 )
@@ -79,17 +89,19 @@ class Order:
 class PizzaBot:
     """Main class for Mr. Singh Pizza automated answering machine"""
 
-    def __init__(self, db_path: str = "data/pizza_bot.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = os.path.join(DATA_DIR, "pizza_bot.db")
         self.db_path = db_path
         self.menu_items: Dict[int, MenuItem] = {}
         self.customers: Dict[int, Customer] = {}
         self.active_calls: Dict[str, Dict] = {}
 
-        # Initialize directories
-        os.makedirs("logs", exist_ok=True)
-        os.makedirs("data", exist_ok=True)
-        os.makedirs("templates", exist_ok=True)
-        os.makedirs("static/audio", exist_ok=True)
+        # Ensure runtime directories exist, including the parent of whatever
+        # database path was supplied (which may be a relative test path).
+        os.makedirs(LOG_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+        os.makedirs(os.path.join(BASE_DIR, "static", "audio"), exist_ok=True)
 
         # Initialize database
         self.init_database()
@@ -263,6 +275,26 @@ class PizzaBot:
             )
         return None
 
+    def get_customer_by_id(self, customer_id: int) -> Optional[Customer]:
+        """Retrieve customer by ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM customers WHERE id = ?", (customer_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return Customer(
+                id=row[0],
+                name=row[1],
+                phone=row[2],
+                address=row[3],
+                preferences=json.loads(row[4]) if row[4] else None,
+                loyalty_points=row[5]
+            )
+        return None
+
     def get_menu_by_category(self, category: str) -> List[MenuItem]:
         """Get menu items by category"""
         return [item for item in self.menu_items.values()
@@ -356,15 +388,18 @@ class PizzaBot:
         conn.close()
 
         if row:
+            # orders columns: id, customer_id, items, total, status,
+            # order_time, estimated_ready, special_instructions (then c.name,
+            # c.phone from the join).
             return Order(
                 id=row[0],
                 customer_id=row[1],
-                items=json.loads(row[3]),
-                total=row[4],
-                status=row[5],
-                order_time=datetime.fromisoformat(row[6]) if row[6] else datetime.now(),
-                estimated_ready=datetime.fromisoformat(row[7]) if row[7] else None,
-                special_instructions=row[8]
+                items=json.loads(row[2]),
+                total=row[3],
+                status=row[4],
+                order_time=datetime.fromisoformat(row[5]) if row[5] else datetime.now(),
+                estimated_ready=datetime.fromisoformat(row[6]) if row[6] else None,
+                special_instructions=row[7]
             )
         return None
 
@@ -380,6 +415,54 @@ class PizzaBot:
         conn.commit()
         conn.close()
         logger.info(f"Order #{order_id} status updated to: {status}")
+
+    def order_exists(self, order_id: int) -> bool:
+        """Return True if an order with this id exists."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM orders WHERE id = ?", (order_id,))
+        found = cursor.fetchone() is not None
+        conn.close()
+        return found
+
+    def list_orders(self, include_completed: bool = False,
+                    limit: int = 200) -> List[Dict]:
+        """List orders for the kitchen dashboard, oldest first, joined with
+        the customer name/phone. Completed and cancelled orders are excluded
+        unless ``include_completed`` is True."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT o.id, o.customer_id, o.items, o.total, o.status,
+                   o.order_time, o.estimated_ready, o.special_instructions,
+                   c.name AS customer_name, c.phone AS customer_phone
+            FROM orders o
+            LEFT JOIN customers c ON o.customer_id = c.id
+        '''
+        if not include_completed:
+            query += " WHERE o.status NOT IN ('completed', 'cancelled')"
+        query += " ORDER BY o.order_time ASC, o.id ASC LIMIT ?"
+
+        rows = cursor.execute(query, (limit,)).fetchall()
+        conn.close()
+
+        orders = []
+        for row in rows:
+            orders.append({
+                "id": row["id"],
+                "customer_id": row["customer_id"],
+                "customer_name": row["customer_name"] or "Guest",
+                "customer_phone": row["customer_phone"] or "",
+                "items": json.loads(row["items"]) if row["items"] else [],
+                "total": row["total"],
+                "status": row["status"],
+                "order_time": row["order_time"],
+                "estimated_ready": row["estimated_ready"],
+                "special_instructions": row["special_instructions"],
+            })
+        return orders
 
     def log_call(self, caller_id: str, call_type: CallType, status: CallStatus,
                  notes: str = None, sentiment_score: float = None):
@@ -434,10 +517,10 @@ class PizzaBot:
         """Process the customer's order text into items"""
         # Simple NLP for order processing - in production would use more sophisticated NLP
         items = []
-        order_text_lower = order_text.lower()
 
-        # Simple parsing - look for numbers and item names
-        words = order_text.split()
+        # Simple parsing - look for numbers and item names. Lower-case the
+        # words up front so item matching is case-insensitive.
+        words = order_text.lower().split()
         i = 0
         while i < len(words):
             # Look for quantities
@@ -453,13 +536,20 @@ class PizzaBot:
 
                 item_name = " ".join(item_name_parts).strip()
 
-                # Find matching menu item
+                # Find the best-matching menu item by counting how many words
+                # of its name the caller actually said. Picking the highest
+                # overlap (rather than the first item containing any word)
+                # stops a generic word like "pizza" from matching the first
+                # pizza on the menu instead of the specific one requested.
+                requested_words = set(item_name.split())
                 matched_item = None
+                best_score = 0
                 for menu_item in self.menu_items.values():
-                    if (item_name in menu_item.name.lower() or
-                        any(word in menu_item.name.lower() for word in item_name.split())):
+                    name_words = set(menu_item.name.lower().split())
+                    score = len(name_words & requested_words)
+                    if score > best_score:
+                        best_score = score
                         matched_item = menu_item
-                        break
 
                 if matched_item:
                     items.append({
@@ -624,6 +714,11 @@ class PizzaBot:
 
         text_lower = speech_text.lower()
 
+        # Complaints first: a caller saying "my pizza was cold" should be
+        # routed to a complaint, not mistaken for a new order.
+        if any(word in text_lower for word in ['complaint', 'problem', 'issue', 'wrong', 'cold', 'late']):
+            return CallType.COMPLAINT
+
         # Order-related keywords
         if any(word in text_lower for word in ['order', 'pizza', 'food', 'hungry', 'delivery', 'pickup']):
             if any(word in text_lower for word in ['status', 'where is', 'when will', 'tracking']):
@@ -642,10 +737,6 @@ class PizzaBot:
         elif any(word in text_lower for word in ['reserve', 'reservation', 'table', 'book', 'seating']):
             return CallType.RESERVATION
 
-        # Complaints
-        elif any(word in text_lower for word in ['complaint', 'problem', 'issue', 'wrong', 'cold', 'late']):
-            return CallType.COMPLAINT
-
         return CallType.OTHER
 
     def handle_order_status(self, caller_id: str, speech_text: str) -> Dict:
@@ -660,7 +751,7 @@ class PizzaBot:
             order = self.get_order_status(order_id)
 
             if order:
-                customer = self.get_customer_by_phone(order.customer_id) if hasattr(self, 'get_customer_by_phone') else None
+                customer = self.get_customer_by_id(order.customer_id)
                 customer_name = customer.name if customer else "Valued Customer"
 
                 message = f"Hello {customer_name}! Let me check your order #{order_id}.\n\n"

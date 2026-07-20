@@ -21,25 +21,24 @@ An intelligent, AI-powered automated answering system designed specifically for 
 ```
 Mr. Singh Pizza Automated Answering Machine
 ├── src/
-│   ├── main.py              # Main application entry point
-│   ├── config.py            # Configuration settings
-│   ├── models.py            # Data models (Customer, Order, MenuItem, etc.)
-│   ├── services/
-│   │   ├── telephony.py     # Phone call handling (Twilio integration)
-│   │   ├── speech.py        # Speech-to-text and text-to-speech
-│   │   ├── nlp.py           # Natural language processing
-│   │   └── order.py         # Order processing logic
-│   └── utils/
-│       ├── database.py      # Database management
-│       └── helpers.py       # Utility functions
-├── templates/               # HTML templates for web interface
-├── static/                  # Static assets (CSS, JS, images)
-├── data/                    # SQLite database and data files
-├── logs/                    # Application logs
-├── tests/                   # Unit and integration tests
+│   ├── main.py              # PizzaBot core: menu, orders, customers, SQLite; CLI demo
+│   ├── conversation.py      # Phone conversation state machine (order flow)
+│   └── app.py               # Flask app: Twilio voice webhooks + dashboard + API
+├── config.py                # Configuration constants
+├── templates/
+│   ├── index.html           # Informational website
+│   └── staff.html           # Live kitchen dashboard (/staff)
+├── tests/
+│   ├── test_pizza_bot.py    # Unit tests for the bot core
+│   ├── test_voice.py        # End-to-end tests of the Twilio voice flow
+│   └── test_staff.py        # Tests for the kitchen dashboard + API
+├── data/                    # SQLite database (created at runtime, gitignored)
+├── logs/                    # Application logs (created at runtime, gitignored)
 ├── requirements.txt         # Python dependencies
 ├── config.example.env       # Example environment configuration
-└README.md                   # This file
+├── Procfile                 # Production start command (gunicorn)
+├── DEPLOYMENT.md            # Testing + deployment walkthrough
+└── README.md                # This file
 ```
 
 ## Installation
@@ -67,15 +66,26 @@ Mr. Singh Pizza Automated Answering Machine
    # Edit .env with your actual configuration values
    ```
 
-5. **Initialize the database**
+5. **Run it**
+
+   Web + phone server (answers Twilio calls, serves the website/API):
    ```bash
-   python src/main.py init-db
+   python src/app.py            # http://localhost:5000
    ```
 
-6. **Run the application**
+   Or the interactive terminal demo (no phone/server needed):
    ```bash
    python src/main.py
    ```
+
+   The SQLite database, `logs/`, and `data/` directories are created
+   automatically on first run, seeded with the default menu and sample
+   customers — no separate initialization step is needed.
+
+> **To answer real phone calls**, see [DEPLOYMENT.md](DEPLOYMENT.md) for the
+> full walkthrough: local testing with `curl`, testing with a real Twilio
+> number via an ngrok tunnel, and running in production on the client's
+> machine with gunicorn + systemd.
 
 ## Configuration
 
@@ -101,11 +111,40 @@ Visit `http://localhost:5000` to see the web interface showing:
 - Menu items
 - System status
 
-### As a Phone System
-When integrated with Twilio:
-1. Configure your Twilio phone number webhook to point to your deployed application
-2. The system will automatically answer incoming calls
-3. Customers can speak naturally to place orders, ask questions, etc.
+### As a Phone System (Twilio)
+The phone system is built on Twilio Programmable Voice. Twilio provides the
+number, transcribes the caller's speech, and speaks the bot's replies; our
+server answers Twilio's webhooks with TwiML.
+
+1. Start the server: `python src/app.py` (or gunicorn in production).
+2. Expose it over public HTTPS (ngrok for testing, a cloud host or reverse
+   proxy in production).
+3. In the Twilio console, set your number's Voice webhook ("A call comes
+   in") to `https://<public-host>/voice` with method **HTTP POST**.
+4. Set `TWILIO_AUTH_TOKEN` in the environment so the server only accepts
+   genuine Twilio requests.
+5. Call the number and speak naturally to order, check an order, hear the
+   menu, or ask about hours.
+
+Webhook endpoints:
+- `POST /voice` — answers the incoming call with a spoken greeting.
+- `POST /voice/collect` — handles each caller utterance and drives the order
+  conversation.
+
+Full step-by-step instructions are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+### Kitchen Dashboard
+Orders placed by phone flow straight to a live kitchen dashboard at
+`http://<host>/staff`. Staff see each order's items, customer, total, and
+special instructions, and advance it through the workflow
+(received → preparing → ready → out for delivery → completed). The board
+auto-refreshes every few seconds and can chime when a new order arrives.
+
+Protect it in production by setting `STAFF_PASSWORD` (and optionally
+`STAFF_USERNAME`) in the environment — the dashboard then requires HTTP
+Basic auth. It backs onto a small JSON API:
+- `GET /api/orders` — active orders (add `?include_completed=1` for all).
+- `POST /api/orders/<id>/status` — update an order's status.
 
 ### Development Mode
 For testing without a phone system:
@@ -154,9 +193,17 @@ To add support for additional languages:
 
 ## Testing
 
-Run the test suite:
+Run the pytest suite (unit tests for intent detection, order parsing,
+totals, loyalty points, and order-status lookup):
 ```bash
-python -m pytest tests/
+pip install -r requirements.txt   # installs pytest
+pytest
+```
+
+Or run the standalone smoke test, which checks that the app imports,
+initializes its database, and loads the menu:
+```bash
+python test_installation.py
 ```
 
 ## Deployment

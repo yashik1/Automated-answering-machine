@@ -4,8 +4,8 @@
 import os
 from pathlib import Path
 
-# Base directory
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Base directory (this file lives at the project root)
+BASE_DIR = Path(__file__).resolve().parent
 
 # Database configuration
 DATABASE_URL = f"sqlite:///{BASE_DIR}/data/pizza_bot.db"

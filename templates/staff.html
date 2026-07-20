@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mr. Singh Pizza — Kitchen</title>
+    <style>
+        :root { --bg:#12141a; --card:#1c1f27; --line:#2b2f3a; --text:#e8eaed; --muted:#9aa0ac; --red:#d32f2f; }
+        * { box-sizing: border-box; }
+        body { margin:0; font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); }
+        header {
+            position:sticky; top:0; z-index:10; display:flex; flex-wrap:wrap; gap:12px;
+            align-items:center; justify-content:space-between;
+            padding:14px 20px; background:linear-gradient(135deg,#d32f2f,#b71c1c);
+            box-shadow:0 2px 10px rgba(0,0,0,.4);
+        }
+        header h1 { margin:0; font-size:1.4em; }
+        .controls { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:.9em; }
+        .controls label { cursor:pointer; user-select:none; }
+        .pill { background:rgba(0,0,0,.25); padding:4px 10px; border-radius:20px; }
+        #conn.bad { background:#ffca28; color:#000; }
+        button { font-family:inherit; }
+        .toggle-btn { background:rgba(0,0,0,.25); color:#fff; border:1px solid rgba(255,255,255,.35);
+            padding:5px 12px; border-radius:6px; cursor:pointer; }
+        main { padding:20px; }
+        .empty { text-align:center; color:var(--muted); margin-top:80px; font-size:1.2em; }
+        .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
+        .order {
+            background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px;
+            display:flex; flex-direction:column; gap:10px;
+        }
+        .order.is-new { animation:flash 1s ease-in-out 3; border-color:#ffca28; }
+        @keyframes flash { 50% { box-shadow:0 0 0 3px #ffca28; } }
+        .order-top { display:flex; justify-content:space-between; align-items:baseline; }
+        .order-id { font-size:1.3em; font-weight:700; }
+        .time { font-size:.85em; color:var(--muted); text-align:right; }
+        .time.overdue { color:#ff6b6b; font-weight:700; }
+        .cust { font-size:.95em; color:var(--muted); }
+        ul.items { margin:6px 0; padding-left:20px; }
+        ul.items li { margin:2px 0; }
+        .note { background:#3a2f12; border-left:3px solid #ffca28; padding:6px 10px; border-radius:4px; font-size:.9em; }
+        .row { display:flex; justify-content:space-between; align-items:center; margin-top:auto; }
+        .total { font-weight:700; font-size:1.1em; }
+        .badge { padding:3px 10px; border-radius:20px; font-size:.75em; font-weight:700; text-transform:uppercase; letter-spacing:.3px; }
+        .s-received { background:#4a1f1f; color:#ff8a80; }
+        .s-preparing { background:#4a3a12; color:#ffca28; }
+        .s-ready { background:#12401f; color:#69f0ae; }
+        .s-out_for_delivery { background:#123a4a; color:#40c4ff; }
+        .s-completed { background:#1f3a1f; color:#9ccc65; }
+        .s-cancelled { background:#333; color:#bbb; }
+        .actions { display:flex; gap:8px; flex-wrap:wrap; }
+        .btn { flex:1; min-width:110px; padding:10px; border:none; border-radius:8px; cursor:pointer;
+            font-size:.95em; font-weight:600; color:#fff; }
+        .btn.primary { background:#1565c0; } .btn.primary:hover { background:#1976d2; }
+        .btn.success { background:#2e7d32; } .btn.success:hover { background:#388e3c; }
+        .btn.ghost { background:transparent; border:1px solid var(--line); color:var(--muted); flex:0 0 auto; min-width:0; }
+        .btn.ghost:hover { color:#fff; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🍕 Kitchen — Mr. Singh Pizza</h1>
+        <div class="controls">
+            <span class="pill" id="count">0 active</span>
+            <span class="pill" id="clock">—</span>
+            <span class="pill" id="conn">live</span>
+            <label><input type="checkbox" id="showCompleted"> Show completed</label>
+            <button class="toggle-btn" id="soundBtn">🔔 Sound: off</button>
+        </div>
+    </header>
+    <main>
+        <div id="board" class="grid"></div>
+        <div id="empty" class="empty" hidden>No active orders. New phone orders appear here automatically.</div>
+    </main>
+
+    <script>
+    const FLOW = {
+        received:         [["preparing","Start preparing","primary"]],
+        preparing:        [["ready","Mark ready","primary"]],
+        ready:            [["out_for_delivery","Out for delivery","primary"], ["completed","Complete","success"]],
+        out_for_delivery: [["completed","Complete","success"]],
+    };
+    const TERMINAL = ["completed","cancelled"];
+    let seen = new Set();
+    let soundOn = false;
+    let audioCtx = null;
+
+    function escapeHtml(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+            ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function beep() {
+        if (!soundOn || !audioCtx) return;
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.frequency.value = 880; o.type = "sine";
+        o.connect(g); g.connect(audioCtx.destination);
+        g.gain.setValueAtTime(0.001, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+        o.start(); o.stop(audioCtx.currentTime + 0.4);
+    }
+
+    function cardHtml(o, isNew) {
+        const items = o.items.map(i => `<li>${i.quantity} × ${escapeHtml(i.name)}</li>`).join("");
+        const note = o.special_instructions ? `<div class="note">📝 ${escapeHtml(o.special_instructions)}</div>` : "";
+        const timeCls = o.overdue ? "time overdue" : "time";
+        const mins = (o.minutes_ago == null) ? "" : `${o.minutes_ago} min ago`;
+        const actions = (FLOW[o.status] || []).map(([st,label,kind]) =>
+            `<button class="btn ${kind}" onclick="setStatus(${o.id},'${st}')">${label}</button>`).join("");
+        const cancel = TERMINAL.includes(o.status) ? "" :
+            `<button class="btn ghost" onclick="setStatus(${o.id},'cancelled')">Cancel</button>`;
+        return `<div class="order ${isNew ? "is-new" : ""}">
+            <div class="order-top">
+                <span class="order-id">#${o.id}</span>
+                <span class="${timeCls}">${escapeHtml(o.placed_at)}<br>${mins}${o.ready_by ? " · ready by " + escapeHtml(o.ready_by) : ""}</span>
+            </div>
+            <div class="cust">${escapeHtml(o.customer_name)} · ${escapeHtml(o.customer_phone)}</div>
+            <ul class="items">${items}</ul>
+            ${note}
+            <div class="row">
+                <span class="total">$${Number(o.total).toFixed(2)}</span>
+                <span class="badge s-${o.status}">${o.status.replace(/_/g," ")}</span>
+            </div>
+            <div class="actions">${actions}${cancel}</div>
+        </div>`;
+    }
+
+    async function setStatus(id, status) {
+        try {
+            await fetch(`/api/orders/${id}/status`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({status}),
+            });
+            load();
+        } catch (e) { /* next poll will retry */ }
+    }
+
+    function render(orders) {
+        const board = document.getElementById("board");
+        const empty = document.getElementById("empty");
+        document.getElementById("count").textContent =
+            orders.filter(o => !TERMINAL.includes(o.status)).length + " active";
+
+        let sawNew = false;
+        board.innerHTML = orders.map(o => {
+            const isNew = !seen.has(o.id) && !TERMINAL.includes(o.status);
+            if (isNew) sawNew = true;
+            return cardHtml(o, isNew);
+        }).join("");
+        orders.forEach(o => seen.add(o.id));
+
+        empty.hidden = orders.length !== 0;
+        if (sawNew) beep();
+    }
+
+    async function load() {
+        const conn = document.getElementById("conn");
+        const showCompleted = document.getElementById("showCompleted").checked ? 1 : 0;
+        try {
+            const res = await fetch(`/api/orders?include_completed=${showCompleted}`);
+            if (!res.ok) throw new Error(res.status);
+            const data = await res.json();
+            document.getElementById("clock").textContent = data.server_time;
+            conn.textContent = "live"; conn.classList.remove("bad");
+            render(data.orders);
+        } catch (e) {
+            conn.textContent = "reconnecting…"; conn.classList.add("bad");
+        }
+    }
+
+    document.getElementById("soundBtn").addEventListener("click", () => {
+        soundOn = !soundOn;
+        if (soundOn && !audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (soundOn && audioCtx) audioCtx.resume();
+        document.getElementById("soundBtn").textContent = `🔔 Sound: ${soundOn ? "on" : "off"}`;
+        if (soundOn) beep();
+    });
+    document.getElementById("showCompleted").addEventListener("change", load);
+
+    load();
+    setInterval(load, 5000);
+    </script>
+</body>
+</html>
