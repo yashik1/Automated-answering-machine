@@ -35,14 +35,19 @@ def has_gather(xml_body: str) -> bool:
     return ET.fromstring(xml_body).find(".//Gather") is not None
 
 
-def incoming(client, call_sid="CA_test", frm="555-0101"):
-    return client.post("/voice", data={"CallSid": call_sid, "From": frm})
+# Dial the Downtown store's number so calls auto-route there and these tests
+# can focus on the order flow (location selection is covered in test_locations).
+DOWNTOWN_NUMBER = "+1 (234) 567-0001"
 
 
-def collect(client, speech, call_sid="CA_test", frm="555-0101"):
+def incoming(client, call_sid="CA_test", frm="555-0101", to=DOWNTOWN_NUMBER):
+    return client.post("/voice", data={"CallSid": call_sid, "From": frm, "To": to})
+
+
+def collect(client, speech, call_sid="CA_test", frm="555-0101", to=DOWNTOWN_NUMBER):
     return client.post(
         "/voice/collect",
-        data={"CallSid": call_sid, "From": frm, "SpeechResult": speech},
+        data={"CallSid": call_sid, "From": frm, "To": to, "SpeechResult": speech},
     )
 
 
@@ -52,15 +57,16 @@ def test_incoming_call_greets_known_customer(client):
     resp = incoming(client)
     body = resp.data.decode()
     assert resp.status_code == 200
-    assert "Mr Singh Pizza" in say_text(body)
-    assert "Singh" in say_text(body)   # known caller greeted by name
-    assert has_gather(body)            # bot is listening
+    assert "Downtown" in say_text(body)   # auto-routed to the dialed location
+    assert "Singh" in say_text(body)      # known caller greeted by name
+    assert has_gather(body)               # bot is listening
 
 
 def test_incoming_call_greets_unknown_caller(client):
     resp = incoming(client, frm="555-8888")
     body = resp.data.decode()
-    assert "Thank you for calling Mr Singh Pizza" in say_text(body)
+    assert "calling" in say_text(body).lower()
+    assert "Downtown" in say_text(body)
     assert has_gather(body)
 
 

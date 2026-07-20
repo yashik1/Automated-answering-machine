@@ -126,6 +126,8 @@ def create_app(bot: PizzaBot = None) -> Flask:
             "total": order["total"],
             "status": order["status"],
             "special_instructions": order["special_instructions"],
+            "location_slug": order.get("location_slug"),
+            "location_name": order.get("location_name"),
             "placed_at": placed.strftime("%I:%M %p") if placed else "",
             "ready_by": ready.strftime("%I:%M %p") if ready else "",
             "minutes_ago": minutes_ago,
@@ -197,11 +199,25 @@ def create_app(bot: PizzaBot = None) -> Flask:
     # -- Kitchen staff dashboard ------------------------------------------
 
     @app.get("/staff")
-    def staff_dashboard():
+    @app.get("/staff/<location_slug>")
+    def staff_dashboard(location_slug=None):
         challenge = require_staff()
         if challenge:
             return challenge
-        return render_template("staff.html", statuses=ORDER_STATUSES)
+        locations = [{"slug": loc.slug, "name": loc.name}
+                     for loc in bot.list_locations()]
+        return render_template("staff.html", locations=locations,
+                               selected_slug=location_slug or "")
+
+    @app.get("/api/locations")
+    def api_locations():
+        challenge = require_staff()
+        if challenge:
+            return challenge
+        return jsonify(locations=[
+            {"slug": loc.slug, "name": loc.name, "address": loc.address}
+            for loc in bot.list_locations()
+        ])
 
     @app.get("/api/orders")
     def api_orders():
@@ -209,7 +225,13 @@ def create_app(bot: PizzaBot = None) -> Flask:
         if challenge:
             return challenge
         include_completed = request.args.get("include_completed", "0") == "1"
-        raw = bot.list_orders(include_completed=include_completed)
+        location_slug = request.args.get("location", "").strip()
+        location_id = None
+        if location_slug:
+            loc = bot.get_location_by_slug(location_slug)
+            location_id = loc.id if loc else -1   # -1 => unknown slug, match nothing
+        raw = bot.list_orders(include_completed=include_completed,
+                              location_id=location_id)
         return jsonify(
             orders=[serialize_order(o) for o in raw],
             server_time=datetime.datetime.now().strftime("%I:%M:%S %p"),
@@ -237,7 +259,8 @@ def create_app(bot: PizzaBot = None) -> Flask:
             abort(403)
         call_sid = request.values.get("CallSid", "local-test")
         caller = request.values.get("From", "")
-        session = manager.get_session(call_sid, caller)
+        dialed = request.values.get("To", "")
+        session = manager.get_session(call_sid, caller, dialed_number=dialed)
         return voice_reply(manager.greeting(session))
 
     @app.post("/voice/collect")
@@ -246,8 +269,9 @@ def create_app(bot: PizzaBot = None) -> Flask:
             abort(403)
         call_sid = request.values.get("CallSid", "local-test")
         caller = request.values.get("From", "")
+        dialed = request.values.get("To", "")
         speech = request.values.get("SpeechResult", "")
-        session = manager.get_session(call_sid, caller)
+        session = manager.get_session(call_sid, caller, dialed_number=dialed)
         return voice_reply(manager.handle(session, speech))
 
     if not os.getenv("TWILIO_AUTH_TOKEN"):

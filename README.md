@@ -36,6 +36,7 @@ Mr. Singh Pizza Automated Answering Machine
 ├── logs/                    # Application logs (created at runtime, gitignored)
 ├── requirements.txt         # Python dependencies
 ├── config.example.env       # Example environment configuration
+├── locations.example.json   # Example multi-location config (copy to locations.json)
 ├── Procfile                 # Production start command (gunicorn)
 ├── DEPLOYMENT.md            # Testing + deployment walkthrough
 └── README.md                # This file
@@ -165,8 +166,30 @@ auto-refreshes every few seconds and can chime when a new order arrives.
 Protect it in production by setting `STAFF_PASSWORD` (and optionally
 `STAFF_USERNAME`) in the environment — the dashboard then requires HTTP
 Basic auth. It backs onto a small JSON API:
-- `GET /api/orders` — active orders (add `?include_completed=1` for all).
+- `GET /api/orders` — active orders (add `?include_completed=1` for all,
+  `?location=<slug>` to filter to one store).
 - `POST /api/orders/<id>/status` — update an order's status.
+
+### Multiple Locations
+The system supports multiple stores. Define them in a `locations.json` file
+at the project root (copy `locations.example.json` to start):
+
+```json
+[
+  { "slug": "downtown", "name": "Mr. Singh Pizza - Downtown", "address": "123 Pizza St", "hours": "Mon-Sun 11am-10pm" },
+  { "slug": "uptown",   "name": "Mr. Singh Pizza - Uptown",   "address": "456 Curry Ln", "hours": "Mon-Sun 11am-11pm" }
+]
+```
+
+On a call, the bot asks the caller **which location** they'd like to order
+from and records that store on the order. (If you instead give each store its
+own phone number, set it as the location's `phone_number` and calls
+auto-route by the dialed number — no question asked.)
+
+Each store gets its own kitchen board at `/staff/<slug>`
+(e.g. `/staff/downtown`); the plain `/staff` view shows every location with a
+dropdown filter and a store badge on each order. Edit `locations.json` and
+restart to add or change stores.
 
 ### Development Mode
 For testing without a phone system:
