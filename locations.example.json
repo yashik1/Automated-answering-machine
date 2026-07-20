@@ -1,0 +1,18 @@
+[
+  {
+    "slug": "downtown",
+    "name": "Mr. Singh Pizza - Downtown",
+    "phone_number": "+1 (234) 567-0001",
+    "address": "123 Pizza Street, Food City",
+    "hours": "Mon-Sun 11am-10pm",
+    "active": 1
+  },
+  {
+    "slug": "uptown",
+    "name": "Mr. Singh Pizza - Uptown",
+    "phone_number": "+1 (234) 567-0002",
+    "address": "456 Curry Lane, Food City",
+    "hours": "Mon-Sun 11am-11pm",
+    "active": 1
+  }
+]

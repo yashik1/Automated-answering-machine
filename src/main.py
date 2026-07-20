@@ -6,6 +6,7 @@ answering FAQs, and managing reservations.
 """
 
 import os
+import re
 import json
 import logging
 from datetime import datetime, timedelta
@@ -13,6 +14,12 @@ from typing import Dict, List, Optional
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
+
+
+def normalize_phone(number: str) -> str:
+    """Reduce a phone number to just its digits so numbers written in
+    different formats (+1 555-000-1111 vs 15550001111) compare equal."""
+    return re.sub(r"\D", "", number or "")
 
 # Anchor all runtime paths to the project root so the app behaves the same
 # no matter which directory it is launched from.
@@ -85,6 +92,19 @@ class Order:
     order_time: datetime
     estimated_ready: datetime
     special_instructions: Optional[str] = None
+    location_id: Optional[int] = None
+
+
+@dataclass
+class Location:
+    """Restaurant location (store) data structure"""
+    id: int
+    slug: str
+    name: str
+    phone_number: Optional[str] = None
+    address: Optional[str] = None
+    hours: Optional[str] = None
+    active: bool = True
 
 class PizzaBot:
     """Main class for Mr. Singh Pizza automated answering machine"""
@@ -106,9 +126,11 @@ class PizzaBot:
         # Initialize database
         self.init_database()
 
-        # Load menu and sample data
+        # Load menu, sample data, and locations
+        self.locations: Dict[int, Location] = {}
         self.load_menu()
         self.load_sample_data()
+        self.load_locations()
 
         logger.info("PizzaBot initialized successfully")
 
@@ -171,6 +193,25 @@ class PizzaBot:
                 sentiment_score REAL
             )
         ''')
+
+        # Locations table (multi-store support)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                phone_number TEXT,
+                address TEXT,
+                hours TEXT,
+                active INTEGER DEFAULT 1
+            )
+        ''')
+
+        # Migration: older databases predate the orders.location_id column.
+        cursor.execute("PRAGMA table_info(orders)")
+        order_columns = [row[1] for row in cursor.fetchall()]
+        if "location_id" not in order_columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN location_id INTEGER")
 
         conn.commit()
         conn.close()
@@ -255,6 +296,110 @@ class PizzaBot:
 
         conn.close()
 
+    # Two sample stores used when no locations.json is provided. The client
+    # replaces these (or ships a locations.json) with their real stores.
+    DEFAULT_LOCATIONS = [
+        {"slug": "downtown", "name": "Mr. Singh Pizza - Downtown",
+         "phone_number": "+1 (234) 567-0001",
+         "address": "123 Pizza Street, Food City", "hours": "Mon-Sun 11am-10pm"},
+        {"slug": "uptown", "name": "Mr. Singh Pizza - Uptown",
+         "phone_number": "+1 (234) 567-0002",
+         "address": "456 Curry Lane, Food City", "hours": "Mon-Sun 11am-11pm"},
+    ]
+
+    def _read_locations_file(self) -> Optional[List[Dict]]:
+        """Read locations.json from the project root, if present."""
+        path = os.path.join(BASE_DIR, "locations.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning(f"Could not read locations.json: {exc}")
+        return None
+
+    def load_locations(self):
+        """Seed / sync locations. If locations.json exists it is the source of
+        truth and is upserted by slug on every start (so editing the file and
+        restarting updates the stores). Otherwise the default stores are
+        seeded once."""
+        file_locations = self._read_locations_file()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if file_locations:
+            for loc in file_locations:
+                cursor.execute('''
+                    INSERT INTO locations (slug, name, phone_number, address, hours, active)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(slug) DO UPDATE SET
+                        name=excluded.name, phone_number=excluded.phone_number,
+                        address=excluded.address, hours=excluded.hours, active=excluded.active
+                ''', (loc["slug"], loc["name"], loc.get("phone_number"),
+                      loc.get("address"), loc.get("hours"), int(loc.get("active", 1))))
+            conn.commit()
+            logger.info(f"Synced {len(file_locations)} locations from locations.json")
+        else:
+            cursor.execute("SELECT COUNT(*) FROM locations")
+            if cursor.fetchone()[0] == 0:
+                for loc in self.DEFAULT_LOCATIONS:
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO locations
+                            (slug, name, phone_number, address, hours, active)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (loc["slug"], loc["name"], loc.get("phone_number"),
+                          loc.get("address"), loc.get("hours"), 1))
+                conn.commit()
+                logger.info(f"Seeded {len(self.DEFAULT_LOCATIONS)} default locations")
+
+        conn.close()
+        self.locations = {loc.id: loc for loc in self.list_locations(active_only=False)}
+        logger.info(f"Loaded {len(self.locations)} locations")
+
+    @staticmethod
+    def _row_to_location(row) -> Location:
+        return Location(
+            id=row["id"], slug=row["slug"], name=row["name"],
+            phone_number=row["phone_number"], address=row["address"],
+            hours=row["hours"], active=bool(row["active"]),
+        )
+
+    def list_locations(self, active_only: bool = True) -> List[Location]:
+        """All locations, ordered by id. Inactive ones are excluded unless
+        ``active_only`` is False."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        query = "SELECT * FROM locations"
+        if active_only:
+            query += " WHERE active = 1"
+        query += " ORDER BY id ASC"
+        rows = cursor.execute(query).fetchall()
+        conn.close()
+        return [self._row_to_location(r) for r in rows]
+
+    def get_location_by_slug(self, slug: str) -> Optional[Location]:
+        if not slug:
+            return None
+        for loc in self.list_locations(active_only=False):
+            if loc.slug == slug:
+                return loc
+        return None
+
+    def get_location_by_phone(self, phone_number: str) -> Optional[Location]:
+        """Match a dialed number to a location (optional auto-routing). Numbers
+        are compared digits-only so formatting differences don't matter."""
+        target = normalize_phone(phone_number)
+        if not target:
+            return None
+        for loc in self.list_locations(active_only=False):
+            if loc.phone_number and normalize_phone(loc.phone_number) == target:
+                return loc
+        return None
+
+    def get_location(self, location_id: int) -> Optional[Location]:
+        return self.locations.get(location_id)
+
     def get_customer_by_phone(self, phone: str) -> Optional[Customer]:
         """Retrieve customer by phone number"""
         conn = sqlite3.connect(self.db_path)
@@ -333,7 +478,8 @@ class PizzaBot:
         return customer
 
     def create_order(self, customer_id: int, items: List[Dict],
-                    special_instructions: str = None) -> Order:
+                    special_instructions: str = None,
+                    location_id: int = None) -> Order:
         """Create a new order"""
         # Calculate total
         total = 0.0
@@ -350,9 +496,10 @@ class PizzaBot:
         cursor = conn.cursor()
 
         cursor.execute('''
-            INSERT INTO orders (customer_id, items, total, estimated_ready, special_instructions)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (customer_id, json.dumps(items), total, estimated_ready, special_instructions))
+            INSERT INTO orders (customer_id, items, total, estimated_ready, special_instructions, location_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (customer_id, json.dumps(items), total, estimated_ready,
+              special_instructions, location_id))
 
         order_id = cursor.lastrowid
         conn.commit()
@@ -366,10 +513,12 @@ class PizzaBot:
             status="received",
             order_time=datetime.now(),
             estimated_ready=estimated_ready,
-            special_instructions=special_instructions
+            special_instructions=special_instructions,
+            location_id=location_id
         )
 
-        logger.info(f"New order created: #{order_id} for customer {customer_id} - ${total:.2f}")
+        logger.info(f"New order created: #{order_id} for customer {customer_id} "
+                    f"at location {location_id} - ${total:.2f}")
         return order
 
     def get_order_status(self, order_id: int) -> Optional[Order]:
@@ -426,10 +575,11 @@ class PizzaBot:
         return found
 
     def list_orders(self, include_completed: bool = False,
-                    limit: int = 200) -> List[Dict]:
-        """List orders for the kitchen dashboard, oldest first, joined with
-        the customer name/phone. Completed and cancelled orders are excluded
-        unless ``include_completed`` is True."""
+                    limit: int = 200, location_id: int = None) -> List[Dict]:
+        """List orders for the kitchen dashboard, oldest first, joined with the
+        customer and location. Completed and cancelled orders are excluded
+        unless ``include_completed`` is True. Pass ``location_id`` to show only
+        one store's orders."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -437,15 +587,26 @@ class PizzaBot:
         query = '''
             SELECT o.id, o.customer_id, o.items, o.total, o.status,
                    o.order_time, o.estimated_ready, o.special_instructions,
-                   c.name AS customer_name, c.phone AS customer_phone
+                   o.location_id,
+                   c.name AS customer_name, c.phone AS customer_phone,
+                   l.slug AS location_slug, l.name AS location_name
             FROM orders o
             LEFT JOIN customers c ON o.customer_id = c.id
+            LEFT JOIN locations l ON o.location_id = l.id
         '''
+        conditions = []
+        params = []
         if not include_completed:
-            query += " WHERE o.status NOT IN ('completed', 'cancelled')"
+            conditions.append("o.status NOT IN ('completed', 'cancelled')")
+        if location_id is not None:
+            conditions.append("o.location_id = ?")
+            params.append(location_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY o.order_time ASC, o.id ASC LIMIT ?"
+        params.append(limit)
 
-        rows = cursor.execute(query, (limit,)).fetchall()
+        rows = cursor.execute(query, params).fetchall()
         conn.close()
 
         orders = []
@@ -460,6 +621,9 @@ class PizzaBot:
                 "status": row["status"],
                 "order_time": row["order_time"],
                 "estimated_ready": row["estimated_ready"],
+                "location_id": row["location_id"],
+                "location_slug": row["location_slug"],
+                "location_name": row["location_name"],
                 "special_instructions": row["special_instructions"],
             })
         return orders
@@ -781,9 +945,11 @@ class PizzaBot:
         }
 
     def save_order_and_respond(self, customer: Customer, items: List[Dict],
-                              special_instructions: str = None) -> Dict:
+                              special_instructions: str = None,
+                              location_id: int = None) -> Dict:
         """Save the order and provide confirmation"""
-        order = self.create_order(customer.id, items, special_instructions)
+        order = self.create_order(customer.id, items, special_instructions,
+                                  location_id=location_id)
 
         # Calculate loyalty points earned (1 point per dollar spent)
         points_earned = int(order.total)

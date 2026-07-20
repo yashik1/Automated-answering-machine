@@ -8,6 +8,9 @@ venv/
 # Environment / secrets
 .env
 
+# Per-deployment locations config (copy locations.example.json -> locations.json)
+locations.json
+
 # Runtime artifacts
 logs/
 data/

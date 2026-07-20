@@ -70,6 +70,8 @@ class CallSession:
         self.state = "main"
         self.cart: List[Dict] = []
         self.customer = None
+        self.location = None            # which store this order is for
+        self.dialed_number = None       # the number the caller dialed (Twilio "To")
         self.special_instructions: Optional[str] = None
 
 
@@ -82,11 +84,18 @@ class ConversationManager:
 
     # -- session lifecycle -------------------------------------------------
 
-    def get_session(self, call_sid: str, caller_number: str) -> CallSession:
+    def get_session(self, call_sid: str, caller_number: str,
+                    dialed_number: str = None) -> CallSession:
         session = self.sessions.get(call_sid)
         if session is None:
             session = CallSession(call_sid, caller_number)
+            session.dialed_number = dialed_number
             session.customer = self.bot.get_customer_by_phone(caller_number)
+            # Optional auto-routing: if the dialed number maps to a location we
+            # skip the question. With a single shared number it won't match, so
+            # the caller is asked which location instead (see greeting()).
+            if dialed_number:
+                session.location = self.bot.get_location_by_phone(dialed_number)
             self.sessions[call_sid] = session
         return session
 
@@ -96,17 +105,26 @@ class ConversationManager:
     # -- entry point -------------------------------------------------------
 
     def greeting(self, session: CallSession) -> TurnResult:
+        # Decide which store this call is for. If it wasn't auto-routed from
+        # the dialed number, ask the caller (unless there's only one store).
+        if session.location is None:
+            locations = self.bot.list_locations()
+            if len(locations) == 1:
+                session.location = locations[0]
+            elif len(locations) > 1:
+                session.state = "await_location"
+                return TurnResult(
+                    "Thank you for calling Mr Singh Pizza. Which location would "
+                    f"you like to order from? We have "
+                    f"{self._location_options_phrase(locations)}."
+                )
         session.state = "main"
-        who = f", {session.customer.name}" if session.customer else ""
-        return TurnResult(
-            f"Thank you for calling Mr Singh Pizza{who}. "
-            "You can place an order, check an existing order, hear our menu, "
-            "or ask about our hours. How can I help you?"
-        )
+        return TurnResult(self._main_greeting(session))
 
     def handle(self, session: CallSession, speech: str) -> TurnResult:
         speech = (speech or "").strip()
         handler = {
+            "await_location": self._handle_await_location,
             "main": self._handle_main,
             "ordering": self._handle_ordering,
             "confirm": self._handle_confirm,
@@ -114,6 +132,31 @@ class ConversationManager:
             "await_order_number": self._handle_order_number,
         }.get(session.state, self._handle_main)
         return handler(session, speech)
+
+    def _main_greeting(self, session: CallSession) -> str:
+        place = session.location.name if session.location else "Mr Singh Pizza"
+        who = f", {session.customer.name}" if session.customer else ""
+        return (
+            f"Thank you for calling {place}{who}. "
+            "You can place an order, check an existing order, hear our menu, "
+            "or ask about our hours. How can I help you?"
+        )
+
+    def _handle_await_location(self, session: CallSession, speech: str) -> TurnResult:
+        location = self._match_location(speech)
+        if not location:
+            options = self._location_options_phrase(self.bot.list_locations())
+            return TurnResult(
+                f"Sorry, I didn't catch which location. We have {options}. "
+                "Which one would you like?"
+            )
+        session.location = location
+        session.state = "main"
+        return TurnResult(
+            f"Great, ordering from {self._short_location_label(location)}. "
+            "You can place an order, check an existing order, hear our menu, "
+            "or ask about our hours. How can I help you?"
+        )
 
     # -- state handlers ----------------------------------------------------
 
@@ -228,18 +271,49 @@ class ConversationManager:
 
     def _finalize(self, session: CallSession) -> TurnResult:
         result = self.bot.save_order_and_respond(
-            session.customer, session.cart, session.special_instructions
+            session.customer, session.cart, session.special_instructions,
+            location_id=session.location.id if session.location else None,
         )
         order = result["order"]
         eta = order.estimated_ready.strftime("%I:%M %p")
+        where = (f" from {self._short_location_label(session.location)}"
+                 if session.location else "")
         message = (
-            f"Thank you {session.customer.name}. Your order number is {order.id}. "
-            f"Your total is {order.total:.2f} dollars and it should be ready around "
-            f"{eta}. You earned {result['loyalty_points_earned']} loyalty points. "
-            "Thanks for choosing Mr Singh Pizza. Goodbye!"
+            f"Thank you {session.customer.name}. Your order number is {order.id}"
+            f"{where}. Your total is {order.total:.2f} dollars and it should be "
+            f"ready around {eta}. You earned {result['loyalty_points_earned']} "
+            "loyalty points. Thanks for choosing Mr Singh Pizza. Goodbye!"
         )
         self.end_session(session)
         return TurnResult(message, expect_reply=False, hangup=True)
+
+    def _match_location(self, speech: str):
+        """Match spoken text to a location by its slug or short name."""
+        low = (speech or "").lower()
+        best, best_score = None, 0
+        for loc in self.bot.list_locations():
+            score = 2 if loc.slug.lower() in low else 0
+            for word in self._short_location_label(loc).lower().split():
+                if len(word) > 2 and word in low:
+                    score += 1
+            if score > best_score:
+                best, best_score = loc, score
+        return best if best_score > 0 else None
+
+    @staticmethod
+    def _short_location_label(location) -> str:
+        """A speakable short name, e.g. 'Downtown' from 'Mr Singh Pizza - Downtown'."""
+        name = location.name
+        for sep in ("—", "-", ":", "|"):
+            if sep in name:
+                return name.split(sep)[-1].strip()
+        return name.strip()
+
+    def _location_options_phrase(self, locations) -> str:
+        labels = [self._short_location_label(loc) for loc in locations]
+        if len(labels) <= 1:
+            return ", ".join(labels)
+        return ", ".join(labels[:-1]) + f", or {labels[-1]}"
 
     def _parse_order(self, session: CallSession, speech: str) -> List[Dict]:
         """Turn a spoken order into cart items, tolerant of spoken numbers and

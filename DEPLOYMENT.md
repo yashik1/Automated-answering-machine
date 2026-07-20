@@ -138,11 +138,37 @@ Twilio requires a public HTTPS URL. Options, easiest first:
 
 Point the Twilio number's Voice webhook at `https://<public-host>/voice`.
 
-### 3d. The kitchen dashboard
+### 3d. Multiple locations
 
-Staff open `https://<public-host>/staff` on any tablet or screen in the
-kitchen. It polls for orders every few seconds, shows items / customer /
-total / special instructions, and has buttons to advance each order's
+Define the stores in a `locations.json` file at the project root (copy
+`locations.example.json`):
+
+```json
+[
+  { "slug": "downtown", "name": "Mr. Singh Pizza - Downtown", "address": "...", "hours": "..." },
+  { "slug": "uptown",   "name": "Mr. Singh Pizza - Uptown",   "address": "...", "hours": "..." }
+]
+```
+
+`locations.json` is the source of truth: it's re-synced (upserted by `slug`)
+every time the app starts, so editing it and restarting updates the stores.
+It's gitignored so each deployment keeps its own.
+
+- **Shared number (default):** with one Twilio number, the bot asks each
+  caller which location they want and tags the order with that store.
+- **Number per location (optional):** put each store's Twilio number in its
+  `phone_number` field and calls auto-route by the dialed number — the caller
+  is never asked. (You'd point each Twilio number's webhook at the same
+  `/voice`.)
+
+Each store's kitchen uses its own board at `/staff/<slug>` (bookmark it on
+that store's tablet). `/staff` alone shows all stores with a dropdown filter.
+
+### 3e. The kitchen dashboard
+
+Staff open `https://<public-host>/staff/<location>` on any tablet or screen
+in the kitchen. It polls for orders every few seconds, shows items / customer
+/ total / special instructions, and has buttons to advance each order's
 status. New orders flash and (once the "Sound" button is switched on) chime.
 
 Protect it with HTTP Basic auth by setting these in the environment / `.env`:
@@ -159,7 +185,7 @@ guarded by the same auth:
 - `GET /api/orders` — active orders (`?include_completed=1` for the full list)
 - `POST /api/orders/<id>/status` — set an order's status
 
-### 3e. Security checklist
+### 3f. Security checklist
 
 - **Set `TWILIO_AUTH_TOKEN`** in the environment so the server rejects any
   request not signed by Twilio (returns 403). Without it, anyone who finds
@@ -168,7 +194,7 @@ guarded by the same auth:
 - Serve only over HTTPS.
 - Never commit `.env` (already covered by `.gitignore`).
 
-### 3f. Data & backups
+### 3g. Data & backups
 
 - Real customer and order data lives in `data/pizza_bot.db`. Back it up on a
   schedule (e.g. a nightly `cp`/`sqlite3 .backup` to off-machine storage).
