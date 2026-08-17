@@ -23,7 +23,8 @@ Mr. Singh Pizza Automated Answering Machine
 ├── src/
 │   ├── main.py              # PizzaBot core: menu, orders, customers, SQLite; CLI demo
 │   ├── conversation.py      # Phone conversation state machine (order flow)
-│   └── app.py               # Flask app: Twilio voice webhooks + dashboard + API
+│   ├── app.py               # Flask app: Twilio voice webhooks + dashboard + API
+│   └── telephony_asterisk/  # Self-hosted FreePBX/Asterisk transport (alternative to Twilio)
 ├── config.py                # Configuration constants
 ├── templates/
 │   ├── index.html           # Informational website
@@ -31,14 +32,17 @@ Mr. Singh Pizza Automated Answering Machine
 ├── tests/
 │   ├── test_pizza_bot.py    # Unit tests for the bot core
 │   ├── test_voice.py        # End-to-end tests of the Twilio voice flow
-│   └── test_staff.py        # Tests for the kitchen dashboard + API
+│   ├── test_staff.py        # Tests for the kitchen dashboard + API
+│   └── test_asterisk_*.py   # Tests for the Asterisk/FreePBX transport
 ├── data/                    # SQLite database (created at runtime, gitignored)
 ├── logs/                    # Application logs (created at runtime, gitignored)
 ├── requirements.txt         # Python dependencies
+├── requirements-asterisk.txt # Optional deps for the Asterisk/FreePBX transport
 ├── config.example.env       # Example environment configuration
 ├── locations.example.json   # Example multi-location config (copy to locations.json)
 ├── Procfile                 # Production start command (gunicorn)
-├── DEPLOYMENT.md            # Testing + deployment walkthrough
+├── DEPLOYMENT.md            # Testing + deployment walkthrough (Twilio)
+├── DEPLOYMENT_ASTERISK.md   # Testing + deployment walkthrough (self-hosted FreePBX)
 └── README.md                # This file
 ```
 
@@ -155,6 +159,16 @@ Webhook endpoints:
   conversation.
 
 Full step-by-step instructions are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+### As a Phone System (self-hosted FreePBX/Asterisk)
+For full on-prem control and a real staff phone system (extensions,
+voicemail, transfers) alongside the AI order line, `src/telephony_asterisk/`
+implements the same conversation over your own SIP trunk and Asterisk/
+FreePBX PBX instead of Twilio - `conversation.py`/`main.py` are unchanged;
+only the transport differs (Asterisk's AudioSocket + ARI in place of TwiML
+webhooks, with your own STT/TTS provider in place of Twilio's built-in
+speech). See [DEPLOYMENT_ASTERISK.md](DEPLOYMENT_ASTERISK.md) for the full
+FreePBX setup, dialplan wiring, and Python service deployment.
 
 ### Kitchen Dashboard
 Orders placed by phone flow straight to a live kitchen dashboard at
