@@ -1,0 +1,37 @@
+# Optional dependencies for the self-hosted Asterisk/FreePBX telephony
+# transport (src/telephony_asterisk/). Install these ONLY if you're running
+# your own SIP trunk + PBX instead of (or alongside) Twilio:
+#
+#   pip install -r requirements.txt -r requirements-asterisk.txt
+#
+# See DEPLOYMENT_ASTERISK.md for the full setup walkthrough.
+
+# HTTP/WebSocket client used by the ARI client and the (optional) cloud
+# STT/TTS providers below.
+aiohttp==3.14.1
+
+# --- Speech-to-text: pick ONE via STT_PROVIDER ---
+# STT_PROVIDER=deepgram (default, recommended) needs only DEEPGRAM_API_KEY -
+# no extra package, requests go through aiohttp above.
+# STT_PROVIDER=google needs only GOOGLE_STT_API_KEY - same, no extra package.
+
+# --- Text-to-speech: pick ONE via TTS_PROVIDER ---
+# TTS_PROVIDER=polly (default, recommended): AWS SDK for Amazon Polly.
+boto3==1.35.0
+
+# TTS_PROVIDER=piper (offline, no per-use fee, needs a downloaded voice
+# model - see DEPLOYMENT_ASTERISK.md "Going fully offline"). Uncomment if
+# you choose this path:
+# piper-tts==1.2.0
+
+# --- Voice activity detection: pick ONE via VAD_BACKEND ---
+# VAD_BACKEND=energy (default) needs nothing extra - it's pure Python.
+# VAD_BACKEND=webrtc uses Google's WebRTC VAD (better in noisy kitchens);
+# uncomment if you choose this path (compiles a small C extension on
+# install, so it needs build tools present on the server):
+# webrtcvad==2.0.10
+
+# --- Tests for this package ---
+# Pinned to 0.23.x (not the latest 1.x) because pytest-asyncio>=1.0 requires
+# pytest>=8.4, while the base requirements.txt pins pytest==7.4.2.
+pytest-asyncio==0.23.8
